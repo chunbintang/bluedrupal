@@ -1,0 +1,314 @@
+<?php
+/**
+ * @file
+ * The openstack storage module.
+ */
+
+define('OPENSTACK_STORAGE_ADMIN_PERM', 'administer openstack storage');
+
+/**
+ * Implements hook_help().
+ */
+function openstack_storage_help($path, $arg) {
+  switch ($path) {
+    case 'admin/help#openstack_storage':
+      return '<p>' . t('OpenStack Storage services integration.') . '</p>';
+  }
+}
+
+/**
+ * Implements hook_permission().
+ */
+function openstack_storage_permission() {
+  return array(
+    OPENSTACK_STORAGE_ADMIN_PERM => array(
+      'title' => t('Administer OpenStack Storage'),
+      'description' => t('Configure identity and file system.'),
+      'restrict access' => TRUE,
+    ),
+  );
+}
+
+/**
+ * Implements hook_menu().
+ */
+function openstack_storage_menu() {
+  $items = array();
+
+  $items['admin/config/services/openstack_storage'] = array(
+    'title' => 'OpenStack Storage',
+    'description' => 'Configure identity and file system.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('openstack_storage_account_settings'),
+    'access arguments' => array(OPENSTACK_STORAGE_ADMIN_PERM),
+    'type' => MENU_NORMAL_ITEM,
+    'file' => 'openstack_storage.admin.inc',
+    'weight' => -3,
+  );
+  $items['admin/config/services/openstack_storage/account'] = array(
+    'title' => 'Account',
+    'description' => 'Configure account',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('openstack_storage_account_settings'),
+    'access arguments' => array(OPENSTACK_STORAGE_ADMIN_PERM),
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+    'file' => 'openstack_storage.admin.inc',
+    'weight' => -5,
+  );
+
+  $items['admin/config/services/openstack_storage/object-store'] = array(
+    'title' => 'Object Store',
+    'description' => 'Configure object store',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('openstack_storage_object_store_settings'),
+    'access arguments' => array(OPENSTACK_STORAGE_ADMIN_PERM),
+    'type' => MENU_LOCAL_TASK,
+    'file' => 'openstack_storage.admin.inc',
+    'weight' => -5,
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_stream_wrappers().
+ */
+function openstack_storage_stream_wrappers() {
+  return array(
+    'openstack' => array(
+      'name' => t('OpenStack Storage'),
+      'class' => 'OpenStackStorageDrupalStreamWrapper',
+      'description' => t('Store files as objects on OpenStack object storage.'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_stream_wrappers_alter().
+ */
+function openstack_storage_stream_wrappers_alter(&$wrappers) {
+  foreach ($wrappers as $scheme => $wrapper) {
+    if (variable_get('openstack_storage_stream_' . $scheme, '_none') != '_none') {
+      $wrappers[$scheme]['class'] = 'OpenStackStorageDrupalStreamWrapper';
+      // Turn of the LOCAL bit if it is set.
+      $wrappers[$scheme]['type'] &= ~STREAM_WRAPPERS_LOCAL;
+    }
+  }
+}
+
+/**
+ * Implements hook_element_info_alter().
+ *
+ * Switch in our own CSS aggregator, which fixes the
+ * url() links to be fully qualified, instead of relative.
+ */
+function openstack_storage_element_info_alter(&$type) {
+  if (variable_get('openstack_storage_stream_public', '_none') != '_none') {
+    module_load_include('inc', 'openstack_storage', 'openstack_storage.css');
+    $type['styles']['#aggregate_callback'] = '_openstack_storage_aggregate_css';
+  }
+}
+
+/**
+ * Implements hook_flush_caches().
+ */
+function openstack_storage_flush_caches() {
+  return array('cache_file_openstack');
+}
+
+/**
+ * OpenStack Library load.
+ */
+function _openstack_library_load() {
+  if (class_exists('\OpenCloud\OpenStack')) {
+    return TRUE;
+  }
+
+  $autoload_path = drupal_get_path('module', 'openstack_storage') . '/vendor/autoload.php';
+
+  if (!file_exists($autoload_path)) {
+    drupal_set_message(t('PHP-Opencloud could not be loaded because the autolader does not exist. Did you run `composer install` in the openstack_storage folder?'), 'warning');
+    return FALSE;
+  }
+
+  include $autoload_path;
+  return TRUE;
+}
+
+/**
+ * Retrieve the OpenStack client from vendor.
+ */
+function _openstack_storage_get_client() {
+  if (!_openstack_library_load()) {
+    return FALSE;
+  }
+
+  // Only need to check for auth url. Other fields are required on the
+  // form so they are all set or not set at all.
+  if (!variable_get('openstack_storage_auth_url', FALSE)) {
+    drupal_set_message(t('OpenStack Storage credentials have not been set. Provide the settings on the !admin_uri.', array('!admin_uri' => l(t('configuration page'), 'admin/config/services/openstack_storage'))), 'warning');
+    return FALSE;
+  }
+
+  // Establish our credentials.
+  $client = new \OpenCloud\OpenStack(
+      variable_get('openstack_storage_auth_url', ''),
+      array(
+        'username' => variable_get('openstack_storage_username', ''),
+        'password' => variable_get('openstack_storage_password', ''),
+        'tenantName' => variable_get('openstack_storage_tenant_id', '')
+      )
+  );
+  // Maybe need to do `$client->authenticate();`.
+
+  return $client;
+}
+
+/**
+ * Helper function to get the object store types from OpenStack.
+ */
+function _openstack_storage_get_object_store_types($client) {
+  if (!$client) {
+    return array();
+  }
+
+  $types = array();
+
+  if (!$client->getToken()) {
+    $client->authenticate();
+  }
+
+  $catalog = $client->getCatalog();
+  if ($catalog) {
+    foreach ($catalog->getItems() as $catalog_item) {
+      $type = $catalog_item->getType();
+      if ($type == 'object-store') {
+        $types[$catalog_item->getName()] = $catalog_item->getName();
+      }
+    }
+  }
+
+  return $types;
+}
+
+/**
+ * Helper function to get the object store type.
+ */
+function _openstack_storage_get_object_store_type($client = NULL) {
+  if (variable_get('openstack_storage_object_store_type', FALSE)) {
+    return variable_get('openstack_storage_object_store_type', '');
+  }
+  elseif ($client) {
+    // Return the first type available.
+    $types = _openstack_storage_get_object_store_types($client);
+    return reset($types);
+  }
+  else {
+    // Return a default value.
+    return 'swift';
+  }
+}
+
+/**
+ * Helper function to get the regions from the catalog.
+ */
+function _openstack_storage_get_catalog_type_regions($client, $type, $name) {
+  if (!$client) {
+    return array();
+  }
+
+  $regions = array();
+
+  if (!$client->getToken()) {
+    $client->authenticate();
+  }
+
+  $catalog = $client->getCatalog();
+  if ($catalog) {
+    foreach ($catalog->getItems() as $catalog_item) {
+      $cat_type = $catalog_item->getType();
+      $cat_name = $catalog_item->getName();
+
+      if ($cat_type == $type && $cat_name == $name) {
+        $endpoints = $catalog_item->getEndpoints();
+        foreach ($endpoints as $endpoint) {
+          $regions[$endpoint->region] = $endpoint->region;
+        }
+      }
+    }
+  }
+
+  return $regions;
+}
+
+/**
+ * Helper function to get the object store region.
+ */
+function _openstack_storage_get_object_store_region($client = NULL, $type = NULL) {
+  if (variable_get('openstack_storage_object_store_region', FALSE)) {
+    return variable_get('openstack_storage_object_store_region', '');
+  }
+  elseif ($client) {
+    if (!$type) {
+      $type = _openstack_storage_get_object_store_type($client);
+    }
+    // Return the first type available.
+    $regions = _openstack_storage_get_catalog_type_regions($client, 'object-store', $type);
+    return reset($regions);
+  }
+  else {
+    // Return a default value.
+    return 'NL';
+  }
+}
+
+/**
+ * Helper function to setup a object store.
+ */
+function _openstack_storage_get_object_store($client = NULL, $store_type = NULL, $region = NULL) {
+  if (!$client) {
+    $client = _openstack_storage_get_client();
+  }
+  if (!$store_type) {
+    $store_type = _openstack_storage_get_object_store_type($client);
+  }
+  if (!$region) {
+    $region = _openstack_storage_get_object_store_region($client, $store_type);
+  }
+
+  if ($client && $store_type && $region) {
+    return $client->objectStoreService($store_type, $region);
+  }
+
+  return FALSE;
+}
+
+/**
+ * Function for setting object data.
+ */
+function _openstack_storage_set_cached_object_data($uri = NULL, $data = NULL) {
+  $objects = &drupal_static(__FUNCTION__);
+
+  if ($uri && $data) {
+    $objects[$uri] = $data;
+  }
+}
+
+/**
+ * Function for retrieving object data.
+ */
+function _openstack_storage_get_cached_object_data($uri = NULL) {
+  $objects = &drupal_static('_openstack_storage_set_cached_object_data');
+
+  if (isset($objects[$uri])) {
+    return $objects[$uri];
+  }
+
+  $cache = cache_get('object-data:' . $uri, 'cache_file_openstack');
+  if ($cache) {
+    _openstack_storage_set_cached_object_data($uri, $cache->data);
+    return $cache->data;
+  }
+
+  return FALSE;
+}

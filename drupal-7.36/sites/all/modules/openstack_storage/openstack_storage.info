@@ -1,0 +1,15 @@
+name = OpenStack Storage
+description = Support for open stack storage.
+core = 7.x
+package = File management
+
+files[] = openstack_storage.css.inc
+files[] = openstack_storage.admin.inc
+files[] = OpenStackStorageDrupalStreamWrapper.inc
+
+; Information added by Drupal.org packaging script on 2014-11-18
+version = "7.x-1.x-dev"
+core = "7.x"
+project = "openstack_storage"
+datestamp = "1416311188"
+

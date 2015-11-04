@@ -1,0 +1,7 @@
+---
+applications:
+- name: <your_app_name>
+memory: 128M
+instances: 1
+host: <your_app_name>
+path: ./drupal-7.36

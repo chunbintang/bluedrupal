@@ -1,0 +1,25 @@
+<?php
+
+/**
+ * @file Schema and install hooks for the openstack_storage module.
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function openstack_storage_schema() {
+  $schema = array();
+  $cache_schema = drupal_get_schema_unprocessed('system', 'cache');
+  $schema['cache_file_openstack'] = $cache_schema;
+  $schema['cache_file_openstack']['description'] = 'Cache table used to store stats from OpenStack Storage';
+  return $schema;
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function openstack_storage_uninstall() {
+  // Delete all the pathauto variables and then clear the variable cache.
+  db_query("DELETE FROM {variable} WHERE name LIKE 'openstack_storage_%'");
+  cache_clear_all('variables', 'cache');
+}

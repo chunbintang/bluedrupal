@@ -1,0 +1,7 @@
+{
+  "name": "OpenStack/Storage-Drupal-Module",
+  "description": "The OpenStack Storage Drupal module.",
+  "require": {
+    "rackspace/php-opencloud": "v1.11.0"
+  }
+}
